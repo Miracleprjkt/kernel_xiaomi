@@ -34,6 +34,8 @@
 #include <linux/notifier.h>
 #include <linux/msm_drm_notify.h>
 #include <linux/fb.h>
+#undef pr_debug
+#define pr_debug pr_err
 
 union power_supply_propval lct_therm_lvl_reserved;
 union power_supply_propval lct_therm_level;
@@ -255,7 +257,7 @@ struct smb5 {
 	struct smb_dt_props	dt;
 };
 
-static int __debug_mask;
+static int __debug_mask = 0xfff;
 module_param_named(
 	debug_mask, __debug_mask, int, 0600
 );
@@ -327,8 +329,7 @@ static int smb5_chg_config_init(struct smb5 *chip)
 	case PMI632_SUBTYPE:
 		chip->chg.chg_param.smb_version = PMI632_SUBTYPE;
 		chg->wa_flags |= WEAK_ADAPTER_WA | USBIN_OV_WA
-				| CHG_TERMINATION_WA | USBIN_ADC_WA
-				| SKIP_MISC_PBS_IRQ_WA;
+				| CHG_TERMINATION_WA;
 		chg->param = smb5_pmi632_params;
 		chg->use_extcon = true;
 		chg->name = "pmi632_charger";
@@ -410,7 +411,6 @@ static int smb5_configure_internal_pull(struct smb_charger *chg, int type,
 #define MICRO_P1A				100000
 #define MICRO_1PA				1000000
 #define MICRO_3PA				3000000
-#define MICRO_4PA				4000000
 #define OTG_DEFAULT_DEGLITCH_TIME_MS		50
 #define DEFAULT_WD_BARK_TIME			64
 #define DEFAULT_WD_SNARL_TIME_8S		0x07
@@ -449,8 +449,7 @@ static int smb5_parse_dt(struct smb5 *chip)
 	chg->pd_not_supported = chg->pd_not_supported ||
 			of_property_read_bool(node, "qcom,usb-pd-disable");
 
-	chg->lpd_disabled = chg->lpd_disabled ||
-			of_property_read_bool(node, "qcom,lpd-disable");
+	chg->lpd_disabled = of_property_read_bool(node, "qcom,lpd-disable");
 
 	rc = of_property_read_u32(node, "qcom,wd-bark-time-secs",
 					&chip->dt.wd_bark_time);
@@ -573,9 +572,6 @@ static int smb5_parse_dt(struct smb5 *chip)
 	chg->suspend_input_on_debug_batt = of_property_read_bool(node,
 					"qcom,suspend-input-on-debug-batt");
 
-	chg->fake_chg_status_on_debug_batt = of_property_read_bool(node,
-					"qcom,fake-chg-status-on-debug-batt");
-
 	rc = of_property_read_u32(node, "qcom,otg-deglitch-time-ms",
 					&chg->otg_delay_ms);
 	if (rc < 0)
@@ -680,12 +676,6 @@ static int smb5_parse_dt(struct smb5 *chip)
 					&chg->chg_param.hvdcp3_max_icl_ua);
 	if (chg->chg_param.hvdcp3_max_icl_ua <= 0)
 		chg->chg_param.hvdcp3_max_icl_ua = MICRO_3PA;
-
-	/* Used only in Adapter CV mode of operation */
-	of_property_read_u32(node, "qcom,qc4-max-icl-ua",
-				&chg->chg_param.qc4_max_icl_ua);
-	if (chg->chg_param.qc4_max_icl_ua <= 0)
-		chg->chg_param.qc4_max_icl_ua = MICRO_4PA;
 
 	chg->wls_icl_ua = DCIN_ICL_MAX_UA;
 	rc = of_property_read_u32(node, "qcom,wls-current-max-ua",
@@ -814,7 +804,7 @@ static int smb5_usb_get_prop(struct power_supply *psy,
 		val->intval = get_client_vote(chg->usb_icl_votable, PD_VOTER);
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
-		val->intval = get_effective_result(chg->usb_icl_votable);
+		rc = smblib_get_prop_input_current_settled(chg, val);
 		break;
 	case POWER_SUPPLY_PROP_TYPE:
 		val->intval = POWER_SUPPLY_TYPE_USB_PD;
@@ -1042,7 +1032,7 @@ static int smb5_usb_set_prop(struct power_supply *psy,
 		smblib_rerun_apsd(chg);
 		break;
 	default:
-		pr_debug("set prop %d is not supported\n", psp);
+		pr_err("set prop %d is not supported\n", psp);
 		rc = -EINVAL;
 		break;
 	}
@@ -1159,7 +1149,7 @@ static int smb5_usb_port_set_prop(struct power_supply *psy,
 
 	switch (psp) {
 	default:
-		pr_debug("Set prop %d is not supported in pc_port\n",
+		pr_err_ratelimited("Set prop %d is not supported in pc_port\n",
 				psp);
 		rc = -EINVAL;
 		break;
@@ -1278,7 +1268,7 @@ static int smb5_usb_main_get_prop(struct power_supply *psy,
 		break;
 	/* Use this property to report SMB health */
 	case POWER_SUPPLY_PROP_HEALTH:
-		rc = val->intval = smblib_get_prop_smb_health(chg);
+		val->intval = smblib_get_prop_smb_health(chg);
 		break;
 	/* Use this property to report overheat status */
 	case POWER_SUPPLY_PROP_HOT_TEMP:
@@ -1289,10 +1279,12 @@ static int smb5_usb_main_get_prop(struct power_supply *psy,
 		rc = -EINVAL;
 		break;
 	}
-	if (rc < 0)
+	if (rc < 0) {
 		pr_debug("Couldn't get prop %d rc = %d\n", psp, rc);
+		return -ENODATA;
+	}
 
-	return rc;
+	return 0;
 }
 
 static int smb5_usb_main_set_prop(struct power_supply *psy,
@@ -1611,7 +1603,6 @@ static enum power_supply_property smb5_batt_props[] = {
 	POWER_SUPPLY_PROP_RECHARGE_SOC,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_FORCE_RECHARGE,
-	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
 	POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE,
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
 	POWER_SUPPLY_PROP_CHARGING_ENABLED,
@@ -1749,10 +1740,6 @@ static int smb5_batt_get_prop(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_FORCE_RECHARGE:
 		val->intval = 0;
-		break;
-	case POWER_SUPPLY_PROP_TIME_TO_FULL_NOW:
-		rc = smblib_get_prop_from_bms(chg,
-				POWER_SUPPLY_PROP_TIME_TO_FULL_NOW, val);
 		break;
 	case POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE:
 		val->intval = chg->fcc_stepper_enable;
@@ -2320,21 +2307,18 @@ static int smb5_configure_typec(struct smb_charger *chg)
 		}
 	}
 
-	if (chg->chg_param.smb_version != PMI632_SUBTYPE) {
-		/*
-		 * Enable detection of unoriented debug
-		 * accessory in source mode
-		 */
-		rc = smblib_masked_write(chg, DEBUG_ACCESS_SRC_CFG_REG,
-					 EN_UNORIENTED_DEBUG_ACCESS_SRC_BIT,
-					 EN_UNORIENTED_DEBUG_ACCESS_SRC_BIT);
-		if (rc < 0) {
-			dev_err(chg->dev,
-				"Couldn't configure TYPE_C_DEBUG_ACCESS_SRC_CFG_REG rc=%d\n",
-					rc);
-			return rc;
-		}
+	/* Enable detection of unoriented debug accessory in source mode */
+	rc = smblib_masked_write(chg, DEBUG_ACCESS_SRC_CFG_REG,
+				 EN_UNORIENTED_DEBUG_ACCESS_SRC_BIT,
+				 EN_UNORIENTED_DEBUG_ACCESS_SRC_BIT);
+	if (rc < 0) {
+		dev_err(chg->dev,
+			"Couldn't configure TYPE_C_DEBUG_ACCESS_SRC_CFG_REG rc=%d\n",
+				rc);
+		return rc;
+	}
 
+	if (chg->chg_param.smb_version != PMI632_SUBTYPE) {
 		rc = smblib_masked_write(chg, USBIN_LOAD_CFG_REG,
 				USBIN_IN_COLLAPSE_GF_SEL_MASK |
 				USBIN_AICL_STEP_TIMING_SEL_MASK,
@@ -2705,9 +2689,8 @@ static int smb5_init_hw(struct smb5 *chip)
 	 */
 	if (chg->chg_param.smb_version == PMI632_SUBTYPE) {
 		schgm_flash_init(chg);
+		smblib_rerun_apsd_if_required(chg);
 	}
-
-	smblib_rerun_apsd_if_required(chg);
 
 	/* Use ICL results from HW */
 	rc = smblib_icl_override(chg, HW_AUTO_MODE);
@@ -3672,7 +3655,6 @@ static int smb5_probe(struct platform_device *pdev)
 	chg->connector_health = -EINVAL;
 	chg->otg_present = false;
 	chg->main_fcc_max = -EINVAL;
-	mutex_init(&chg->adc_lock);
 
 	chg->regmap = dev_get_regmap(chg->dev->parent, NULL);
 	if (!chg->regmap) {
