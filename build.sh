@@ -2,9 +2,9 @@
 #
 # Compile script for QuicksilveR kernel
 # Copyright (C) 2020-2021 Adithya R.
-
+# Copyright (C) 2021 Welton Phelipe 
 SECONDS=0 # builtin bash timer
-ZIPNAME="redmi-ginkgo-$(date '+%Y%m%d-%H%M').zip"
+ZIPNAME="Redmi-ginkgo-$(date '+%Y%m%d-%H%M').zip"
 TC_DIR="$HOME/tc/proton-clang"
 AK3_DIR="$HOME/android/AnyKernel3"
 DEFCONFIG="vendor/ginkgo-perf_defconfig"
@@ -19,8 +19,8 @@ exit 1
 fi
 fi
 
-export KBUILD_BUILD_USER=Ceijhey
-export KBUILD_BUILD_HOST=redmi
+export KBUILD_BUILD_USER=Welton
+export KBUILD_BUILD_HOST=Redmi
 
 if [[ $1 = "-r" || $1 = "--regen" ]]; then
 make O=out ARCH=arm64 $DEFCONFIG savedefconfig
@@ -42,7 +42,7 @@ if [ -f "out/arch/arm64/boot/Image.gz-dtb" ] && [ -f "out/arch/arm64/boot/dtbo.i
 echo -e "\nKernel compiled succesfully! Zipping up...\n"
 if [ -d "$AK3_DIR" ]; then
 cp -r $AK3_DIR AnyKernel3
-elif ! git clone -q https://github.com/ghostrider-reborn/AnyKernel3; then
+elif ! git clone -q https://github.com/ceijhey/AnyKernel3; then
 echo -e "\nAnyKernel3 repo not found locally and cloning failed! Aborting..."
 exit 1
 fi
